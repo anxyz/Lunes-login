@@ -512,6 +512,8 @@ def main():
     with SB(**sb_kwargs) as sb:
         print("✅ 浏览器已启动")
         try:
+            # SeleniumBase 的 open 会初始化 CDP 模式；空白页即可完成初始化。
+            sb.open("about:blank")
             if login(sb):
                 success, info = visit_server(sb)
                 if success:
