@@ -6,7 +6,7 @@ import time
 import subprocess
 import requests
 import re
-from seleniumbase import SB
+from urllib.parse import urlsplit
 
 # 从环境变量获取账号密码和 TG 配置
 EMAIL        = os.environ.get("LUNES_EMAIL") or ""     # 登录邮箱
@@ -15,9 +15,15 @@ TG_CHAT_ID   = os.environ.get("TG_CHAT_ID") or ""      # chat id,可选
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or ""    # bot token,可选
 
 LOGIN_URL = "https://betadash.lunes.host/login?next=/"
+EMAIL_SELECTOR = 'input[name="email" i]'
+PASSWORD_SELECTOR = 'input[name="password" i]'
+SUBMIT_SELECTOR = 'button[type="submit"], input[type="submit"]'
 
 #  Telegram 推送
 def send_tg_message(status_icon, status_text, extra_text=""):
+    if os.environ.get("SEND_TG", "true").lower() != "true":
+        print("ℹ️ 本次运行已关闭 Telegram 推送。")
+        return
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         print("ℹ️ 未配置 TG_BOT_TOKEN 或 TG_CHAT_ID，跳过 Telegram 推送。")
         return
@@ -57,7 +63,7 @@ def send_tg_message(status_icon, status_text, extra_text=""):
 
 #  js注入脚本
 _EXPAND_JS = """
-(function() {
+return (function() {
     var ts = document.querySelector('input[name="cf-turnstile-response"]');
     if (!ts) return 'no-turnstile';
     var el = ts;
@@ -81,20 +87,23 @@ _EXPAND_JS = """
 """
 
 _EXISTS_JS = """
-(function(){
-    return document.querySelector('input[name="cf-turnstile-response"]') !== null;
+return (function(){
+    return document.querySelector(
+        'input[name="cf-turnstile-response"], .cf-turnstile, '
+        + 'iframe[src*="challenges.cloudflare.com"]'
+    ) !== null;
 })()
 """
 
 _SOLVED_JS = """
-(function(){
+return (function(){
     var i = document.querySelector('input[name="cf-turnstile-response"]');
     return !!(i && i.value && i.value.length > 20);
 })()
 """
 
 _COORDS_JS = """
-(function(){
+return (function(){
     var iframes = document.querySelectorAll('iframe');
     for (var i = 0; i < iframes.length; i++) {
         var src = iframes[i].src || '';
@@ -120,7 +129,7 @@ _COORDS_JS = """
 """
 
 _WININFO_JS = """
-(function(){
+return (function(){
     return {
         sx: window.screenX || 0,
         sy: window.screenY || 0,
@@ -131,21 +140,88 @@ _WININFO_JS = """
 """
 
 def js_fill_input(sb, selector: str, text: str):
-    safe_text = text.replace('\\', '\\\\').replace('"', '\\"')
-    sb.execute_script(f"""
-    (function(){{
-        var el = document.querySelector('{selector}');
-        if (!el) return;
+    filled = sb.execute_script("""
+        var el = document.querySelector(arguments[0]);
+        if (!el) return false;
         var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-        if (nativeInputValueSetter) {{
-            nativeInputValueSetter.call(el, "{safe_text}");
-        }} else {{
-            el.value = "{safe_text}";
-        }}
-        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-    }})()
-    """)
+        if (nativeInputValueSetter) {
+            nativeInputValueSetter.call(el, arguments[1]);
+        } else {
+            el.value = arguments[1];
+        }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return el.value === arguments[1];
+    """, selector, text)
+    if not filled:
+        raise RuntimeError(f"无法填写登录字段: {selector}")
+
+
+def redact(text):
+    text = str(text)
+    for secret in (EMAIL, PASSWORD, TG_BOT_TOKEN, TG_CHAT_ID):
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    return re.sub(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', '[EMAIL]', text)
+
+
+def login_failed(sb, reason, screenshot="login_failed.png"):
+    print(f"❌ {reason}")
+    try:
+        current = urlsplit(sb.get_current_url())
+        print(f"  当前 URL: {current.scheme}://{current.netloc}{current.path}")
+        print(f"  当前标题: {redact(sb.get_title() or '')}")
+        # 只读取可见文本，不输出含有密码、验证码令牌或 Cookie 的页面源码。
+        body = redact(sb.get_text("body") or "")
+        print(f"  页面提示: {body[:2000]}")
+        sb.save_screenshot(screenshot)
+    except Exception as error:
+        print(f"  ⚠️ 获取登录诊断信息失败: {redact(error)}")
+    return False
+
+
+def login_form_visible(sb):
+    return (sb.is_element_visible(EMAIL_SELECTOR)
+            and sb.is_element_visible(PASSWORD_SELECTOR))
+
+
+def is_authenticated(sb):
+    current = urlsplit(sb.get_current_url())
+    if (current.scheme != "https"
+            or current.netloc.lower() != "betadash.lunes.host"
+            or current.path.rstrip("/").lower() == "/login"
+            or login_form_visible(sb)):
+        return False
+    title = (sb.get_title() or "").lower()
+    return (sb.is_element_visible("a.server-card")
+            or "account" in title or "dashboard" in title)
+
+
+def is_cloudflare_page(sb):
+    title = (sb.get_title() or "").lower()
+    return ("just a moment" in title or "cloudflare" in title
+            or sb.is_element_present("#challenge-running, #challenge-form"))
+
+
+def click_browser_captcha(sb):
+    try:
+        sb.uc_gui_click_captcha()
+    except Exception as error:
+        print(f"  ⚠️ 浏览器验证码点击未完成: {redact(error)}")
+
+
+def wait_for_login_form(sb, timeout=60):
+    deadline = time.monotonic() + timeout
+    next_click = time.monotonic()
+    while time.monotonic() < deadline:
+        if login_form_visible(sb):
+            return True
+        if time.monotonic() >= next_click and is_cloudflare_page(sb):
+            print("⏳ 正在处理登录页面的 Cloudflare 验证...")
+            click_browser_captcha(sb)
+            next_click = time.monotonic() + 10
+        time.sleep(1)
+    return False
 
 def _activate_window():
     for cls in ["chrome", "chromium", "Chromium", "Chrome", "google-chrome"]:
@@ -212,8 +288,11 @@ def handle_turnstile(sb) -> bool:
         try: sb.execute_script(_EXPAND_JS)
         except Exception: pass
         time.sleep(0.3)
-        
-        _click_turnstile(sb)
+
+        # SeleniumBase 可定位普通页面脚本无法直接读取的验证码控件。
+        click_browser_captcha(sb)
+        if not sb.execute_script(_SOLVED_JS):
+            _click_turnstile(sb)
         
         for _ in range(8):
             time.sleep(0.5)
@@ -225,36 +304,13 @@ def handle_turnstile(sb) -> bool:
     print("  ❌ Turnstile 6 次均失败")
     return False
 
-def login(sb) -> bool:
+def login(sb, timeout=45) -> bool:
     print(f"🌐 打开登录页面: {LOGIN_URL}")
     sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=5)
-    time.sleep(6)
 
-    print("⏳ 等待 Cloudflare 验证通过...")
-    cf_passed = False
-    for i in range(30):
-        page_src = sb.get_page_source() or ""
-        if 'input[name="email"]' in page_src.lower() or 'name="email"' in page_src.lower():
-            cf_passed = True
-            print(f"✅ Cloudflare 验证已通过（{i+1}s）")
-            break
-        time.sleep(1)
-    if not cf_passed:
-        print("⚠️ Cloudflare 验证可能未通过，继续尝试...")
-
-    try:
-        sb.wait_for_element('input[name="email"]', timeout=15)
-    except Exception:
-        try:
-            sb.wait_for_element('input[name="Email"]', timeout=5)
-        except Exception:
-            print("❌ 页面未加载出登录表单")
-            cur_url = sb.get_current_url()
-            page_title = sb.get_title() or ""
-            print(f"  当前 URL: {cur_url}")
-            print(f"  当前标题: {page_title}")
-            sb.save_screenshot("login_load_fail.png")
-            return False
+    print("⏳ 等待登录表单及 Cloudflare 验证...")
+    if not wait_for_login_form(sb):
+        return login_failed(sb, "页面未加载出登录表单", "login_load_fail.png")
 
     print("🍪 关闭可能的 Cookie 弹窗...")
     try:
@@ -267,41 +323,40 @@ def login(sb) -> bool:
         pass
 
     print(f"📧 填写邮箱...")
-    js_fill_input(sb, 'input[name="email"]', EMAIL)
+    js_fill_input(sb, EMAIL_SELECTOR, EMAIL)
     time.sleep(0.3)
     
     print("🔑 填写密码...")
-    js_fill_input(sb, 'input[name="password"]', PASSWORD)
+    js_fill_input(sb, PASSWORD_SELECTOR, PASSWORD)
     time.sleep(1)
 
-    if sb.execute_script(_EXISTS_JS):
-        if not handle_turnstile(sb):
-            print("❌ 登录界面的 Turnstile 验证失败")
-            sb.save_screenshot("login_turnstile_fail.png")
-            return False
+    # 验证组件异步加载，不能只在填写密码后检查一次。
+    for _ in range(8):
+        if sb.execute_script(_EXISTS_JS):
+            if not handle_turnstile(sb):
+                return login_failed(sb, "登录界面的 Turnstile 验证失败",
+                                    "login_turnstile_fail.png")
+            break
+        time.sleep(1)
     else:
         print("ℹ️ 未检测到 Turnstile")
 
     print("🖱️ 点击登录按钮提交登录...")
-    sb.click('button[type="submit"]')
+    sb.uc_click(SUBMIT_SELECTOR, reconnect_time=3)
 
     print("⏳ 等待登录跳转...")
-    for _ in range(12):
+    deadline = time.monotonic() + timeout
+    next_click = time.monotonic()
+    while time.monotonic() < deadline:
+        if is_authenticated(sb):
+            print("✅ 登录成功，已进入账户页面！")
+            return True
+        if time.monotonic() >= next_click and is_cloudflare_page(sb):
+            click_browser_captcha(sb)
+            next_click = time.monotonic() + 10
         time.sleep(1)
-        cur_url = sb.get_current_url().split('?')[0].lower()
-        page_title = sb.get_title() or ""
-        if cur_url.startswith("https://betadash.lunes.host") or "Lunes host | Account page" in page_title.lower():
-            break
 
-    cur_url = sb.get_current_url().split('?')[0].lower()
-    page_title = sb.get_title() or ""
-    if "login" not in cur_url and "account" in page_title.lower():
-        print(f"✅ 登录成功！(URL: {sb.get_current_url()}, Title: {page_title})")
-        return True
-        
-    print(f"❌ 登录失败，页面未跳转到账户页。(URL: {sb.get_current_url()}, Title: {page_title})")
-    sb.save_screenshot("login_failed.png")
-    return False
+    return login_failed(sb, "登录失败，等待后仍未进入账户页面")
 
 # 访问服务器页面
 def visit_server(sb) -> (bool, dict):
@@ -353,13 +408,19 @@ def main():
     print("#" * 25)
     print("   Lunes 自动登录续期")
     print("#" * 25)
+
+    if not EMAIL.strip() or not PASSWORD:
+        print("❌ 请配置 LUNES_EMAIL 和 LUNES_PASSWORD。")
+        return 1
+
+    from seleniumbase import SB
     
     is_proxy = os.environ.get("IS_PROXY", "false").lower() == "true"
     sb_kwargs = {"uc": True, "headless": False}
     
     if is_proxy:
-        proxy_str = "http://127.0.0.1:1081"
-        print(f"🔗 挂载sing-box代理: {proxy_str}")
+        proxy_str = os.environ.get("PROXY_SERVER") or "http://127.0.0.1:1081"
+        print("🔗 使用 sing-box 代理")
         sb_kwargs["proxy"] = proxy_str
     else:
         print("🌐 未使用代理，直连访问")
@@ -376,7 +437,8 @@ def main():
             success, info = visit_server(sb)
             if success:
                 extra = f"服务器: {info['server_name']}\nID: {info['server_id']}"
-                send_tg_message("✅", "续期成功")
+                send_tg_message("✅", "续期成功", extra)
+                return 0
             else:
                 error_msg = info.get('error', '未知错误')
                 print(f"❌ 访问服务器失败: {error_msg}")
@@ -384,9 +446,14 @@ def main():
                 if 'server_id' in info:
                     extra += f"\n服务器ID: {info['server_id']}"
                 send_tg_message("❌", "续期失败", extra)
+                return 1
         else:
             print("\n❌ 登录失败，终止后续续期操作。")
             send_tg_message("❌", "登录失败", "")
+            return 1
+
+    # 即使浏览器上下文接管了异常，也不能把未完成的续期标记为成功。
+    return 1
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

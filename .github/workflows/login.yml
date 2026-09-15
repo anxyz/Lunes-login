@@ -1,16 +1,20 @@
 name: Auto-login-Lunes
 on:
   workflow_dispatch:
+    inputs:
+      notify:
+        description: '发送 Telegram 通知'
+        type: boolean
+        default: true
   schedule:
-    - cron: '0 1 */14 * *' # 每隔14天 12点(UTC 1点) 北京时间9点 运行
+    - cron: '0 1 */14 * *' # 每月 1、15、29 日 UTC 01:00（北京时间 09:00）运行
 
 jobs:
   Renew-lunes:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write
-      actions: write
+      contents: read
     steps:
       - name: 📥 下载代码
         uses: actions/checkout@v6
@@ -26,12 +30,20 @@ jobs:
           pip install seleniumbase aiohttp requests
           seleniumbase install chromedriver
 
+      - name: 🧪 检查登录回归测试
+        run: python3 -m unittest discover -s tests -v
+
       - name: 🌐 设置sing-box代理转发
-        continue-on-error: true
         env:
           NODE_LINK: ${{ secrets.NODE_LINK }} # 在secret里设置 NODE_LINK 代理启用代理 
         run: |
-          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
+          if [ -z "$NODE_LINK" ]; then
+            echo "未配置 NODE_LINK，直连访问"
+            exit 0
+          fi
+          curl --fail --silent --show-error --location --retry 3 \
+            https://main.ssss.nyc.mn/setup_proxy.sh -o "$RUNNER_TEMP/setup_proxy.sh"
+          bash "$RUNNER_TEMP/setup_proxy.sh"
  
       - name: 🚀 运行续期脚本
         env:
@@ -39,20 +51,7 @@ jobs:
           LUNES_PASSWORD: ${{ secrets.LUNES_PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          SEND_TG: ${{ github.event_name != 'workflow_dispatch' || inputs.notify }}
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
             python3 app.py
-          
-      - name: 🧹 清理旧的工作流运行记录
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          runs=$(gh run list --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
-          count=0
-          for run_id in $runs; do
-            count=$((count + 1))
-            if [ $count -gt 1 ]; then
-              echo "删除运行记录: $run_id"
-              gh run delete $run_id || true
-            fi
-          done 
