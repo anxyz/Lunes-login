@@ -43,7 +43,17 @@ jobs:
           fi
           curl --fail --silent --show-error --location --retry 3 \
             https://main.ssss.nyc.mn/setup_proxy.sh -o "$RUNNER_TEMP/setup_proxy.sh"
-          bash "$RUNNER_TEMP/setup_proxy.sh"
+          for attempt in 1 2 3; do
+            if bash "$RUNNER_TEMP/setup_proxy.sh"; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "代理初始化失败，5 秒后重试（第 $attempt 次）"
+              sleep 5
+            fi
+          done
+          echo "::error::代理初始化连续失败，请检查 NODE_LINK 和上游网络连接"
+          exit 1
  
       - name: 🚀 运行续期脚本
         env:
