@@ -37,6 +37,8 @@ class Browser:
         self.captcha_clicks = 0
         self.values = {}
         self.screenshots = []
+        self.driver = types.SimpleNamespace(
+            is_cdp_mode_active=lambda: False, is_connected=lambda: True)
 
     def authenticated(self):
         return (self.submitted_at is not None
@@ -200,44 +202,69 @@ class AuthenticationTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("node"), "JavaScript 回归检查需要 Node.js")
-class WebDriverScriptTests(unittest.TestCase):
-    def execute(self, script, input_value=None):
-        # WebDriver 将脚本作为函数体执行；IIFE 的返回值不会自动返回给 Python。
+class BrowserScriptTests(unittest.TestCase):
+    def execute(self, script, input_value=None, cdp=False, args=()):
+        # 使用 JavaScript 引擎分别复现 WebDriver 的函数体和 CDP 的表达式执行。
         harness = """
             const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
             const input = data.value === null ? null : {value: data.value};
-            const document = {
+            global.document = {
                 querySelector: () => input,
                 querySelectorAll: () => [{
                     src: 'https://challenges.cloudflare.com/turnstile',
                     getBoundingClientRect: () => ({x: 10, y: 20, width: 300, height: 60})
                 }]
             };
-            const window = {screenX: 1, screenY: 2, outerHeight: 800, innerHeight: 700};
-            const result = new Function('document', 'window', data.script)(document, window);
+            global.window = {screenX: 1, screenY: 2, outerHeight: 800, innerHeight: 700};
+            const result = data.cdp ? eval(data.script) : new Function(data.script)(...data.args);
             process.stdout.write(JSON.stringify(result === undefined ? null : result));
         """
-        result = subprocess.run(
-            [shutil.which("node"), "-e", harness],
-            input=json.dumps({"script": script, "value": input_value}),
-            capture_output=True, text=True, check=True,
+
+        def run_script(script, *script_args):
+            result = subprocess.run(
+                [shutil.which("node"), "-e", harness],
+                input=json.dumps({"script": script, "value": input_value,
+                                  "cdp": cdp, "args": script_args}),
+                capture_output=True, text=True, check=True,
+            )
+            return json.loads(result.stdout)
+
+        browser = types.SimpleNamespace(
+            driver=types.SimpleNamespace(is_cdp_mode_active=lambda: cdp,
+                                         is_connected=lambda: not cdp),
+            execute_script=run_script,
         )
-        return json.loads(result.stdout)
+        return app.execute_js(browser, script, *args)
 
     def test_turnstile_detection_returns_boolean(self):
-        self.assertIs(self.execute(app._EXISTS_JS, ""), True)
-        self.assertIs(self.execute(app._EXISTS_JS), False)
+        for cdp in (False, True):
+            with self.subTest(cdp=cdp):
+                self.assertIs(self.execute(app._EXISTS_JS, "", cdp), True)
+                self.assertIs(self.execute(app._EXISTS_JS, cdp=cdp), False)
 
     def test_turnstile_solution_returns_boolean(self):
-        self.assertIs(self.execute(app._SOLVED_JS, "a" * 30), True)
-        self.assertIs(self.execute(app._SOLVED_JS, ""), False)
+        for cdp in (False, True):
+            with self.subTest(cdp=cdp):
+                self.assertIs(self.execute(app._SOLVED_JS, "a" * 30, cdp), True)
+                self.assertIs(self.execute(app._SOLVED_JS, "", cdp), False)
 
     def test_turnstile_coordinates_reach_python(self):
-        self.assertEqual(self.execute(app._COORDS_JS), {"cx": 40, "cy": 50})
+        for cdp in (False, True):
+            with self.subTest(cdp=cdp):
+                self.assertEqual(self.execute(app._COORDS_JS, cdp=cdp), {"cx": 40, "cy": 50})
 
     def test_window_geometry_reaches_python(self):
-        self.assertEqual(self.execute(app._WININFO_JS),
-                         {"sx": 1, "sy": 2, "oh": 800, "ih": 700})
+        for cdp in (False, True):
+            with self.subTest(cdp=cdp):
+                self.assertEqual(self.execute(app._WININFO_JS, cdp=cdp),
+                                 {"sx": 1, "sy": 2, "oh": 800, "ih": 700})
+
+    def test_special_character_arguments_survive_both_browser_modes(self):
+        password = 'quotes"\\\n`${not_javascript}`\u2028'
+        for cdp in (False, True):
+            with self.subTest(cdp=cdp):
+                self.assertEqual(self.execute("return arguments[0]", cdp=cdp,
+                                              args=(password,)), password)
 
 
 class ResultTests(unittest.TestCase):

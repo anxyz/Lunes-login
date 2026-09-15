@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import json
 import time
 import subprocess
 import requests
@@ -139,8 +140,19 @@ return (function(){
 })()
 """
 
+
+def execute_js(sb, script, *args):
+    # WebDriver 执行函数体；CDP 执行表达式，而且不会转发 execute_script 的参数。
+    driver = sb.driver
+    if (getattr(driver, "is_cdp_mode_active", lambda: False)()
+            and not getattr(driver, "is_connected", lambda: True)()):
+        expression = "(function(){\n" + script + "\n}).apply(null, " + json.dumps(args) + ")"
+        return sb.execute_script(expression)
+    return sb.execute_script(script, *args)
+
+
 def js_fill_input(sb, selector: str, text: str):
-    filled = sb.execute_script("""
+    filled = execute_js(sb, """
         var el = document.querySelector(arguments[0]);
         if (!el) return false;
         var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
@@ -250,7 +262,7 @@ def _xdotool_click(x: int, y: int):
 
 def _click_turnstile(sb):
     try:
-        coords = sb.execute_script(_COORDS_JS)
+        coords = execute_js(sb, _COORDS_JS)
     except Exception as e:
         print(f"⚠️ 获取 Turnstile 坐标失败: {e}")
         return
@@ -258,7 +270,7 @@ def _click_turnstile(sb):
         print("⚠️ 无法定位 Turnstile 坐标")
         return
     try:
-        wi = sb.execute_script(_WININFO_JS)
+        wi = execute_js(sb, _WININFO_JS)
     except Exception:
         wi = {"sx": 0, "sy": 0, "oh": 800, "ih": 768}
         
@@ -272,31 +284,31 @@ def handle_turnstile(sb) -> bool:
     print("🔍 处理 Cloudflare Turnstile 验证...")
     time.sleep(2)
     
-    if sb.execute_script(_SOLVED_JS):
+    if execute_js(sb, _SOLVED_JS):
         print("✅ 已静默通过")
         return True
 
     for _ in range(3):
-        try: sb.execute_script(_EXPAND_JS)
+        try: execute_js(sb, _EXPAND_JS)
         except Exception: pass
         time.sleep(0.5)
 
     for attempt in range(6):
-        if sb.execute_script(_SOLVED_JS):
+        if execute_js(sb, _SOLVED_JS):
             print(f"✅ Turnstile 通过（第 {attempt + 1} 次尝试）")
             return True
-        try: sb.execute_script(_EXPAND_JS)
+        try: execute_js(sb, _EXPAND_JS)
         except Exception: pass
         time.sleep(0.3)
 
         # SeleniumBase 可定位普通页面脚本无法直接读取的验证码控件。
         click_browser_captcha(sb)
-        if not sb.execute_script(_SOLVED_JS):
+        if not execute_js(sb, _SOLVED_JS):
             _click_turnstile(sb)
         
         for _ in range(8):
             time.sleep(0.5)
-            if sb.execute_script(_SOLVED_JS):
+            if execute_js(sb, _SOLVED_JS):
                 print(f"✅ Turnstile 通过（第 {attempt + 1} 次尝试）")
                 return True
         print(f"  ⚠️ 第 {attempt + 1} 次未通过，重试...")
@@ -332,7 +344,7 @@ def login(sb, timeout=45) -> bool:
 
     # 验证组件异步加载，不能只在填写密码后检查一次。
     for _ in range(8):
-        if sb.execute_script(_EXISTS_JS):
+        if execute_js(sb, _EXISTS_JS):
             if not handle_turnstile(sb):
                 return login_failed(sb, "登录界面的 Turnstile 验证失败",
                                     "login_turnstile_fail.png")
