@@ -281,9 +281,13 @@ class ResultTests(unittest.TestCase):
               patch.object(app, "login", return_value=logged_in,
                            side_effect=browser_error),
               patch.object(app, "visit_server", return_value=(visited, info)),
-              patch.object(app, "send_tg_message"),
+              patch.object(app, "send_tg_message") as notify,
               contextlib.redirect_stdout(io.StringIO())):
-            return app.main()
+            result = app.main()
+            notify.assert_called_once()
+            self.assertIs(notify.call_args.kwargs["sb"], browser)
+            self.notification = notify.call_args
+            return result
 
     def test_login_failure_exits_with_failure(self):
         self.assertEqual(self.run_main(False, False), 1)
@@ -296,6 +300,7 @@ class ResultTests(unittest.TestCase):
 
     def test_suppressed_browser_error_still_exits_with_failure(self):
         self.assertEqual(self.run_main(False, False, RuntimeError("Browser closed")), 1)
+        self.assertEqual(self.notification.args[1], "续期异常")
 
     def test_missing_credentials_fail_before_starting_browser(self):
         with (patch.object(app, "EMAIL", ""),

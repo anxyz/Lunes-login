@@ -13,7 +13,7 @@
 | LUNES_EMAIL     | ✅ 必填  | lunes 登录邮箱                                    |
 | LUNES_PASSWORD  | ✅ 必填  | lunes 登录密码                                    | 
 | NODE_LINK       | ❌ 可选  | 代理链接，如 vless:// vmess:// tuic:// hysteria2:// anttls:// socks5://|
-| TG_BOT_TOKEN    | ❌ 可选  | Telegram Bot Token（用于发送通知）                     |
+| TG_BOT_TOKEN    | ❌ 可选  | Telegram Bot Token（用于发送结果和截图通知）             |
 | TG_CHAT_ID      | ❌ 可选  | Telegram Chat ID（接收通知的用户或群组 ID）              |
 
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -34,8 +34,9 @@
 
 ### 运行与排查
 
-- 定时任务在每月 1、15、29 日北京时间 09:00 运行（当月存在该日期时）。
+- 定时任务在每周六北京时间 05:30 运行（UTC 周五 21:30）。
 - 手动运行：进入 **Actions → Auto-login-Lunes → Run workflow**。调试时可取消勾选 `发送 Telegram 通知`。
+- TG 通知默认开启：配置 `TG_BOT_TOKEN` 和 `TG_CHAT_ID` 后，成功时发送服务器页面截图，登录或服务器访问失败时发送当前页面截图，结果、时间和服务器信息附在图片说明中。截图会隐藏输入框内容；截图或图片上传失败时自动改发文字通知。
 - 登录后会等待账户页面加载，再访问服务器页面。登录、验证码或服务器访问失败时，Actions 会显示失败，日志会保留当前页面地址、标题和脱敏后的页面提示。
 - 配置了 `NODE_LINK` 时，代理初始化失败会终止任务；请先修复代理配置再重试。
 - 历史运行记录交由 GitHub 的保留策略管理，不再每次只保留最后一次运行，便于比较问题出现前后的日志。

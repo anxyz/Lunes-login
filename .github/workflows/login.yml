@@ -7,7 +7,7 @@ on:
         type: boolean
         default: true
   schedule:
-    - cron: '0 1 */14 * *' # 每月 1、15、29 日 UTC 01:00（北京时间 09:00）运行
+    - cron: '30 21 * * 5' # UTC 周五 21:30，即北京时间每周六 05:30
 
 jobs:
   Renew-lunes:

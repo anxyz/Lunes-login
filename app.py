@@ -7,6 +7,8 @@ import time
 import subprocess
 import requests
 import re
+import tempfile
+from pathlib import Path
 from urllib.parse import urlsplit
 
 # 从环境变量获取账号密码和 TG 配置
@@ -20,14 +22,40 @@ EMAIL_SELECTOR = 'input[name="email" i]'
 PASSWORD_SELECTOR = 'input[name="password" i]'
 SUBMIT_SELECTOR = 'button[type="submit"], input[type="submit"]'
 
-#  Telegram 推送
-def send_tg_message(status_icon, status_text, extra_text=""):
+def telegram_text(text, limit):
+    encoded = text.encode("utf-16-le")
+    if len(encoded) <= limit * 2:
+        return text
+    return encoded[:(limit - 1) * 2].decode("utf-16-le", errors="ignore") + "…"
+
+
+def telegram_post(method, **kwargs):
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/{method}"
+    try:
+        response = requests.post(url, timeout=30, **kwargs)
+        try:
+            result = response.json()
+        except ValueError:
+            result = {}
+        if not isinstance(result, dict):
+            result = {}
+        if response.status_code == 200 and result.get("ok") is True:
+            return True
+        reason = result.get("description", "Telegram 返回了无效响应")
+        print(f"⚠️ Telegram {method} 失败（HTTP {response.status_code}）: {redact(reason)}")
+    except requests.RequestException as error:
+        print(f"⚠️ Telegram {method} 请求异常: {redact(error)}")
+    return False
+
+
+# Telegram 推送：优先发送带说明的截图，截图失败时回退为文字通知。
+def send_tg_message(status_icon, status_text, extra_text="", sb=None):
     if os.environ.get("SEND_TG", "true").lower() != "true":
         print("ℹ️ 本次运行已关闭 Telegram 推送。")
-        return
+        return False
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         print("ℹ️ 未配置 TG_BOT_TOKEN 或 TG_CHAT_ID，跳过 Telegram 推送。")
-        return
+        return False
 
     local_time = time.gmtime(time.time() + 8 * 3600)
     current_time_str = time.strftime("%Y-%m-%d %H:%M:%S", local_time)
@@ -50,17 +78,22 @@ def send_tg_message(status_icon, status_text, extra_text=""):
     if extra_text:
         text += f"\n\n{extra_text}"
 
-    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TG_CHAT_ID, "text": text}
-    
-    try:
-        r = requests.post(url, json=payload, timeout=10)
-        if r.status_code == 200:
-            print("📩 Telegram 通知发送成功！")
-        else:
-            print(f"  ⚠️ Telegram 通知发送失败: {r.text}")
-    except Exception as e:
-        print(f"  ⚠️ Telegram 通知发送异常: {e}")
+    if sb is not None:
+        screenshot = capture_notification_screenshot(sb)
+        if screenshot and telegram_post(
+            "sendPhoto",
+            data={"chat_id": TG_CHAT_ID, "caption": telegram_text(text, 1024)},
+            files={"photo": ("lunes-status.png", screenshot, "image/png")},
+        ):
+            print("📸 Telegram 截图通知发送成功！")
+            return True
+        print("ℹ️ 截图通知未发送成功，改为发送文字通知。")
+
+    if telegram_post("sendMessage", json={"chat_id": TG_CHAT_ID,
+                                          "text": telegram_text(text, 4096)}):
+        print("📩 Telegram 文字通知发送成功！")
+        return True
+    return False
 
 #  js注入脚本
 _EXPAND_JS = """
@@ -175,6 +208,43 @@ def redact(text):
         if secret:
             text = text.replace(secret, "[REDACTED]")
     return re.sub(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', '[EMAIL]', text)
+
+
+def capture_notification_screenshot(sb):
+    try:
+        # 只在截图时隐藏输入框内容，避免发送登录表单中的账号、密码等值。
+        masked = execute_js(sb, """
+            const style = document.createElement('style');
+            style.id = 'lunes-notification-mask';
+            style.textContent = `
+                input, textarea, input::placeholder, textarea::placeholder {
+                    color: transparent !important;
+                    -webkit-text-fill-color: transparent !important;
+                    text-shadow: none !important;
+                    caret-color: transparent !important;
+                }
+            `;
+            document.head.appendChild(style);
+            return true;
+        """)
+        if not masked:
+            raise RuntimeError("无法隐藏截图中的输入框内容")
+        with tempfile.TemporaryDirectory(prefix="lunes-notification-") as folder:
+            sb.save_screenshot("lunes-status.png", folder=folder)
+            screenshot = Path(folder, "lunes-status.png").read_bytes()
+            if not screenshot:
+                raise RuntimeError("截图文件为空")
+            return screenshot
+    except Exception as error:
+        print(f"⚠️ 页面截图失败: {redact(error)}")
+        return None
+    finally:
+        try:
+            execute_js(sb, """
+                document.getElementById('lunes-notification-mask')?.remove();
+            """)
+        except Exception:
+            pass
 
 
 def login_failed(sb, reason, screenshot="login_failed.png"):
@@ -445,23 +515,29 @@ def main():
         except Exception:
             pass
 
-        if login(sb):
-            success, info = visit_server(sb)
-            if success:
-                extra = f"服务器: {info['server_name']}\nID: {info['server_id']}"
-                send_tg_message("✅", "续期成功", extra)
-                return 0
+        try:
+            if login(sb):
+                success, info = visit_server(sb)
+                if success:
+                    extra = f"服务器: {info['server_name']}\nID: {info['server_id']}"
+                    send_tg_message("✅", "续期成功", extra, sb=sb)
+                    return 0
+                else:
+                    error_msg = info.get('error', '未知错误')
+                    print(f"❌ 访问服务器失败: {error_msg}")
+                    extra = f"错误: {error_msg}"
+                    if 'server_id' in info:
+                        extra += f"\n服务器ID: {info['server_id']}"
+                    send_tg_message("❌", "续期失败", extra, sb=sb)
+                    return 1
             else:
-                error_msg = info.get('error', '未知错误')
-                print(f"❌ 访问服务器失败: {error_msg}")
-                extra = f"错误: {error_msg}"
-                if 'server_id' in info:
-                    extra += f"\n服务器ID: {info['server_id']}"
-                send_tg_message("❌", "续期失败", extra)
+                print("\n❌ 登录失败，终止后续续期操作。")
+                send_tg_message("❌", "登录失败", sb=sb)
                 return 1
-        else:
-            print("\n❌ 登录失败，终止后续续期操作。")
-            send_tg_message("❌", "登录失败", "")
+        except Exception as error:
+            message = redact(error)
+            print(f"❌ 续期异常: {message}")
+            send_tg_message("❌", "续期异常", message, sb=sb)
             return 1
 
     # 即使浏览器上下文接管了异常，也不能把未完成的续期标记为成功。
