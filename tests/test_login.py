@@ -128,10 +128,11 @@ class LoginTests(unittest.TestCase):
         browser = Browser(self.clock, redirect_after=None)
         self.assertFalse(app.login(browser, timeout=7))
         self.assertGreaterEqual(self.clock.now - browser.submitted_at, 7)
-        self.assertIn("Invalid credentials", self.output.getvalue())
+        self.assertNotIn("Invalid credentials", self.output.getvalue())
+        self.assertIn("Invalid credentials", app.login_diagnostics(browser))
         self.assertNotIn(app.EMAIL, self.output.getvalue())
         self.assertNotIn(app.PASSWORD, self.output.getvalue())
-        self.assertEqual(browser.screenshots, ["login_failed.png"])
+        self.assertEqual(browser.screenshots, [])
 
     def test_waits_for_delayed_turnstile_before_submitting(self):
         browser = Browser(self.clock, turnstile_at=5)

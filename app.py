@@ -41,10 +41,9 @@ def telegram_post(method, **kwargs):
             result = {}
         if response.status_code == 200 and result.get("ok") is True:
             return True
-        reason = result.get("description", "Telegram 返回了无效响应")
-        print(f"⚠️ Telegram {method} 失败（HTTP {response.status_code}）: {redact(reason)}")
-    except requests.RequestException as error:
-        print(f"⚠️ Telegram {method} 请求异常: {redact(error)}")
+        print(f"⚠️ Telegram {method} 失败（HTTP {response.status_code}）")
+    except requests.RequestException:
+        print("⚠️ Telegram 请求异常")
     return False
 
 
@@ -203,6 +202,7 @@ def js_fill_input(sb, selector: str, text: str):
 
 
 def redact(text):
+    # 用于 TG 详情中的凭据脱敏；公开日志不接收页面内容或异常详情。
     text = str(text)
     for secret in (EMAIL, PASSWORD, TG_BOT_TOKEN, TG_CHAT_ID):
         if secret:
@@ -235,8 +235,8 @@ def capture_notification_screenshot(sb):
             if not screenshot:
                 raise RuntimeError("截图文件为空")
             return screenshot
-    except Exception as error:
-        print(f"⚠️ 页面截图失败: {redact(error)}")
+    except Exception:
+        print("⚠️ 页面截图失败")
         return None
     finally:
         try:
@@ -247,19 +247,22 @@ def capture_notification_screenshot(sb):
             pass
 
 
-def login_failed(sb, reason, screenshot="login_failed.png"):
+def login_failed(reason):
     print(f"❌ {reason}")
+    return False
+
+
+def login_diagnostics(sb):
+    """仅返回给 TG 的失败详情，不打印或写入 Actions 附件。"""
+    details = []
     try:
         current = urlsplit(sb.get_current_url())
-        print(f"  当前 URL: {current.scheme}://{current.netloc}{current.path}")
-        print(f"  当前标题: {redact(sb.get_title() or '')}")
-        # 只读取可见文本，不输出含有密码、验证码令牌或 Cookie 的页面源码。
-        body = redact(sb.get_text("body") or "")
-        print(f"  页面提示: {body[:2000]}")
-        sb.save_screenshot(screenshot)
-    except Exception as error:
-        print(f"  ⚠️ 获取登录诊断信息失败: {redact(error)}")
-    return False
+        details.append(f"当前页面: {current.scheme}://{current.hostname}{current.path}")
+        details.append(f"页面标题: {sb.get_title() or ''}")
+        details.append(f"页面提示: {(sb.get_text('body') or '')[:2000]}")
+    except Exception:
+        details.append("未能读取完整页面详情，请查看截图。")
+    return redact("\n".join(details))
 
 
 def login_form_visible(sb):
@@ -288,8 +291,8 @@ def is_cloudflare_page(sb):
 def click_browser_captcha(sb):
     try:
         sb.uc_gui_click_captcha()
-    except Exception as error:
-        print(f"  ⚠️ 浏览器验证码点击未完成: {redact(error)}")
+    except Exception:
+        print("⚠️ 浏览器验证码点击未完成")
 
 
 def wait_for_login_form(sb, timeout=60):
@@ -333,8 +336,8 @@ def _xdotool_click(x: int, y: int):
 def _click_turnstile(sb):
     try:
         coords = execute_js(sb, _COORDS_JS)
-    except Exception as e:
-        print(f"⚠️ 获取 Turnstile 坐标失败: {e}")
+    except Exception:
+        print("⚠️ 获取验证码位置失败")
         return
     if not coords:
         print("⚠️ 无法定位 Turnstile 坐标")
@@ -347,7 +350,7 @@ def _click_turnstile(sb):
     bar = wi["oh"] - wi["ih"]
     ax  = coords["cx"] + wi["sx"]
     ay  = coords["cy"] + wi["sy"] + bar
-    print(f"🖱️ 尝试点击 Turnstile ({ax}, {ay})")
+    print("🖱️ 正在点击验证码")
     _xdotool_click(ax, ay)
 
 def handle_turnstile(sb) -> bool:
@@ -365,7 +368,7 @@ def handle_turnstile(sb) -> bool:
 
     for attempt in range(6):
         if execute_js(sb, _SOLVED_JS):
-            print(f"✅ Turnstile 通过（第 {attempt + 1} 次尝试）")
+            print("✅ Turnstile 验证通过")
             return True
         try: execute_js(sb, _EXPAND_JS)
         except Exception: pass
@@ -379,20 +382,20 @@ def handle_turnstile(sb) -> bool:
         for _ in range(8):
             time.sleep(0.5)
             if execute_js(sb, _SOLVED_JS):
-                print(f"✅ Turnstile 通过（第 {attempt + 1} 次尝试）")
+                print("✅ Turnstile 验证通过")
                 return True
-        print(f"  ⚠️ 第 {attempt + 1} 次未通过，重试...")
+        print("⚠️ 验证未通过，正在重试")
 
     print("  ❌ Turnstile 6 次均失败")
     return False
 
 def login(sb, timeout=45) -> bool:
-    print(f"🌐 打开登录页面: {LOGIN_URL}")
+    print("🌐 正在打开登录页面")
     sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=5)
 
     print("⏳ 等待登录表单及 Cloudflare 验证...")
     if not wait_for_login_form(sb):
-        return login_failed(sb, "页面未加载出登录表单", "login_load_fail.png")
+        return login_failed("页面未加载出登录表单")
 
     print("🍪 关闭可能的 Cookie 弹窗...")
     try:
@@ -416,8 +419,7 @@ def login(sb, timeout=45) -> bool:
     for _ in range(8):
         if execute_js(sb, _EXISTS_JS):
             if not handle_turnstile(sb):
-                return login_failed(sb, "登录界面的 Turnstile 验证失败",
-                                    "login_turnstile_fail.png")
+                return login_failed("登录界面的 Turnstile 验证失败")
             break
         time.sleep(1)
     else:
@@ -438,7 +440,7 @@ def login(sb, timeout=45) -> bool:
             next_click = time.monotonic() + 10
         time.sleep(1)
 
-    return login_failed(sb, "登录失败，等待后仍未进入账户页面")
+    return login_failed("登录失败，等待后仍未进入账户页面")
 
 # 访问服务器页面
 def visit_server(sb) -> (bool, dict):
@@ -463,7 +465,7 @@ def visit_server(sb) -> (bool, dict):
         return False, {"error": f"无法从 href 解析服务器 ID: {href}"}
     server_id = match.group(1)
 
-    print(f"🖱️ 点击服务器卡片 (ID: {server_id})")
+    print("🖱️ 正在打开服务器页面")
     card.click()
     time.sleep(3)
 
@@ -483,7 +485,7 @@ def visit_server(sb) -> (bool, dict):
     else:
         server_name = f"ID {server_id}"
 
-    print(f"✅ 成功访问服务器: {server_name} (ID: {server_id})")
+    print("✅ 服务器页面访问成功")
     return True, {"server_id": server_id, "server_name": server_name}
 
 def main():
@@ -510,33 +512,28 @@ def main():
     with SB(**sb_kwargs) as sb:
         print("✅ 浏览器已启动")
         try:
-            sb.open("https://api.ip.sb/ip")
-            print(f"🌐 当前出口真实 IP: {sb.get_text('body')}")
-        except Exception:
-            pass
-
-        try:
             if login(sb):
                 success, info = visit_server(sb)
                 if success:
                     extra = f"服务器: {info['server_name']}\nID: {info['server_id']}"
+                    print("✅ 续期成功")
                     send_tg_message("✅", "续期成功", extra, sb=sb)
                     return 0
                 else:
                     error_msg = info.get('error', '未知错误')
-                    print(f"❌ 访问服务器失败: {error_msg}")
-                    extra = f"错误: {error_msg}"
+                    print("❌ 访问服务器失败")
+                    extra = f"错误: {redact(error_msg)}"
                     if 'server_id' in info:
                         extra += f"\n服务器ID: {info['server_id']}"
                     send_tg_message("❌", "续期失败", extra, sb=sb)
                     return 1
             else:
                 print("\n❌ 登录失败，终止后续续期操作。")
-                send_tg_message("❌", "登录失败", sb=sb)
+                send_tg_message("❌", "登录失败", login_diagnostics(sb), sb=sb)
                 return 1
         except Exception as error:
             message = redact(error)
-            print(f"❌ 续期异常: {message}")
+            print("❌ 续期过程中发生异常")
             send_tg_message("❌", "续期异常", message, sb=sb)
             return 1
 
