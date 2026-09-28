@@ -10,6 +10,23 @@ on:
     - cron: '30 21 * * 5' # UTC 周五 21:30，即北京时间每周六 05:30
 
 jobs:
+  update-activity:
+    name: 更新时间
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: 写入时间
+        continue-on-error: true
+        env:
+          ACTIVITY_BRANCH: ${{ github.event.repository.default_branch }}
+          ACTIVITY_OWNER_ID: ${{ github.repository_owner_id }}
+        run: bash scripts/update-activity.sh
+
   Renew-lunes:
     runs-on: ubuntu-latest
     timeout-minutes: 30
