@@ -98,6 +98,9 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           SEND_TG: ${{ github.event_name != 'workflow_dispatch' || inputs.notify }}
+          # The installer exposes HTTP CONNECT on 1081 as well as SOCKS on 1080.
+          # Use the original SeleniumBase HTTP entry point for browser traffic.
+          PROXY_SERVER: http://127.0.0.1:1081
         run: |
           python3 scripts/private_run.py --notification-output \
             xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
