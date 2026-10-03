@@ -32,7 +32,8 @@ def telegram_text(text, limit):
 def telegram_post(method, **kwargs):
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/{method}"
     try:
-        response = requests.post(url, timeout=30, **kwargs)
+        # Failure notifications must not depend on the renewal proxy.
+        response = requests.post(url, timeout=30, proxies={"http": "", "https": ""}, **kwargs)
         try:
             result = response.json()
         except ValueError:
@@ -48,13 +49,22 @@ def telegram_post(method, **kwargs):
 
 
 # Telegram 推送：优先发送带说明的截图，截图失败时回退为文字通知。
+def record_notification_sent():
+    if os.environ.get("GITHUB_OUTPUT"):
+        try:
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                output.write("notification_sent=true\n")
+        except OSError:
+            print("⚠️ 通知发送记录保存失败")
+
+
 def send_tg_message(status_icon, status_text, extra_text="", sb=None):
     if os.environ.get("SEND_TG", "true").lower() != "true":
         print("ℹ️ 本次运行已关闭 Telegram 推送。")
-        return False
+        return None
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         print("ℹ️ 未配置 TG_BOT_TOKEN 或 TG_CHAT_ID，跳过 Telegram 推送。")
-        return False
+        return None
 
     local_time = time.gmtime(time.time() + 8 * 3600)
     current_time_str = time.strftime("%Y-%m-%d %H:%M:%S", local_time)
@@ -85,13 +95,16 @@ def send_tg_message(status_icon, status_text, extra_text="", sb=None):
             files={"photo": ("lunes-status.png", screenshot, "image/png")},
         ):
             print("📸 Telegram 截图通知发送成功！")
+            record_notification_sent()
             return True
         print("ℹ️ 截图通知未发送成功，改为发送文字通知。")
 
     if telegram_post("sendMessage", json={"chat_id": TG_CHAT_ID,
                                           "text": telegram_text(text, 4096)}):
         print("📩 Telegram 文字通知发送成功！")
+        record_notification_sent()
         return True
+    print("❌ Telegram 通知发送失败")
     return False
 
 #  js注入脚本
@@ -519,8 +532,8 @@ def main():
                 if success:
                     extra = f"服务器: {info['server_name']}\nID: {info['server_id']}"
                     print("✅ 续期成功")
-                    send_tg_message("✅", "续期成功", extra, sb=sb)
-                    return 0
+                    notification = send_tg_message("✅", "续期成功", extra, sb=sb)
+                    return 1 if notification is False else 0
                 else:
                     error_msg = info.get('error', '未知错误')
                     print("❌ 访问服务器失败")

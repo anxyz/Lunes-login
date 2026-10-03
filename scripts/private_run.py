@@ -50,6 +50,8 @@ PUBLIC_STATUSES = frozenset({
     "ℹ️ 截图通知未发送成功，改为发送文字通知。",
     "⚠️ 页面截图失败",
     "⚠️ Telegram 请求异常",
+    "❌ Telegram 通知发送失败",
+    "⚠️ 通知发送记录保存失败",
 })
 PRIVATE_COMMAND_FILES = (
     "GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_STATE", "GITHUB_STEP_SUMMARY", "GITHUB_PATH",
@@ -88,10 +90,11 @@ def export_proxy_environment(source, destination):
         output.write(f"IS_PROXY=true\nPROXY_SERVER={safe_proxy}\n")
 
 
-def run_private(command, proxy_setup=False):
+def run_private(command, proxy_setup=False, notification_output=False):
     with tempfile.TemporaryDirectory(prefix="lunes-private-") as folder:
         environment = os.environ.copy()
         public_environment = environment.get("GITHUB_ENV")
+        public_output = environment.get("GITHUB_OUTPUT")
         for name in PRIVATE_COMMAND_FILES:
             path = Path(folder, name)
             path.touch(mode=0o600)
@@ -113,6 +116,12 @@ def run_private(command, proxy_setup=False):
             print("❌ 无法启动执行进程", flush=True)
             return 1
 
+        if notification_output and public_output:
+            # Export only an exact delivery receipt, including after app failure.
+            receipt = Path(folder, "GITHUB_OUTPUT").read_text(encoding="utf-8", errors="replace")
+            if "notification_sent=true" in receipt.splitlines():
+                with open(public_output, "a", encoding="utf-8") as output:
+                    output.write("notification_sent=true\n")
         if code:
             print("❌ 执行失败，原始输出未写入公开日志", flush=True)
             return code if code > 0 else 1
@@ -129,8 +138,9 @@ def run_private(command, proxy_setup=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--proxy-setup", action="store_true")
+    parser.add_argument("--notification-output", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if not args.command:
         parser.error("a command is required")
-    raise SystemExit(run_private(args.command, args.proxy_setup))
+    raise SystemExit(run_private(args.command, args.proxy_setup, args.notification_output))

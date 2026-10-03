@@ -82,10 +82,12 @@ class ApplicationPrivacyTests(unittest.TestCase):
 
 
 class ProcessPrivacyTests(unittest.TestCase):
-    def invoke(self, script, proxy=False, environment=None):
+    def invoke(self, script, proxy=False, environment=None, notification_output=False):
         command = [sys.executable, str(RUNNER)]
         if proxy:
             command.append("--proxy-setup")
+        if notification_output:
+            command.append("--notification-output")
         command.extend([sys.executable, "-c", script])
         env = os.environ.copy()
         env.update(environment or {})
@@ -197,6 +199,24 @@ for name in {PRIVATE_COMMAND_FILES!r}:
         )
         self.assertEqual(result.returncode, 1)
         self.assertNotIn("private-command-secret", result.stdout + result.stderr)
+
+    def test_failed_renewal_exports_only_exact_notification_receipt(self):
+        for receipt in ("notification_sent=true", "notification_sent=true private-token", ""):
+            with self.subTest(receipt=receipt), tempfile.TemporaryDirectory() as folder:
+                environment = self.command_files(folder)
+                script = f"""
+import os, sys
+from pathlib import Path
+Path(os.environ['GITHUB_OUTPUT']).write_text({receipt!r} + '\\nsecret=private-token\\n')
+sys.exit(1)
+"""
+                result = self.invoke(script, environment=environment, notification_output=True)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(
+                    Path(environment["GITHUB_OUTPUT"]).read_text(),
+                    "notification_sent=true\n" if receipt == "notification_sent=true" else "",
+                )
+                self.assertNotIn("private-token", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

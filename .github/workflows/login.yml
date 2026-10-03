@@ -32,15 +32,26 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      notification_sent: ${{ steps.renew.outputs.notification_sent }}
+      checkout_outcome: ${{ steps.checkout.outcome }}
+      python_outcome: ${{ steps.python.outcome }}
+      install_outcome: ${{ steps.install.outcome }}
+      test_outcome: ${{ steps.tests.outcome }}
+      proxy_outcome: ${{ steps.proxy.outcome }}
+      renew_outcome: ${{ steps.renew.outcome }}
     steps:
       - name: 📥 下载代码
+        id: checkout
         uses: actions/checkout@v6
       - name: 🐍 设置 Python
+        id: python
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           
       - name: 🛠️ 安装系统依赖和Python依赖
+        id: install
         run: |
           sudo apt-get update
           sudo apt-get install xvfb x11-utils xdotool scrot fonts-noto-cjk -y
@@ -48,9 +59,12 @@ jobs:
           seleniumbase install chromedriver
 
       - name: 🧪 检查登录回归测试
+        id: tests
         run: python3 -m unittest discover -s tests -v
 
       - name: 🌐 设置sing-box代理转发
+        id: proxy
+        timeout-minutes: 6
         env:
           NODE_LINK: ${{ secrets.NODE_LINK }} # 在secret里设置 NODE_LINK 代理启用代理 
         run: |
@@ -58,14 +72,14 @@ jobs:
             echo "未配置 NODE_LINK，直连访问"
             exit 0
           fi
-          if ! curl --fail --silent --location --retry 3 \
+          if ! curl --fail --silent --location --retry 3 --connect-timeout 15 --max-time 60 \
             https://main.ssss.nyc.mn/setup_proxy.sh -o "$RUNNER_TEMP/setup_proxy.sh" \
             >/dev/null 2>&1; then
             echo "::error::代理安装脚本下载失败"
             exit 1
           fi
           for attempt in 1 2 3; do
-            if python3 scripts/private_run.py --proxy-setup bash "$RUNNER_TEMP/setup_proxy.sh"; then
+            if python3 scripts/private_run.py --proxy-setup bash scripts/setup_proxy.sh "$RUNNER_TEMP/setup_proxy.sh"; then
               exit 0
             fi
             if [ "$attempt" -lt 3 ]; then
@@ -77,6 +91,7 @@ jobs:
           exit 1
  
       - name: 🚀 运行续期脚本
+        id: renew
         env:
           LUNES_EMAIL: ${{ secrets.LUNES_EMAIL }}
           LUNES_PASSWORD: ${{ secrets.LUNES_PASSWORD }}
@@ -84,6 +99,37 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           SEND_TG: ${{ github.event_name != 'workflow_dispatch' || inputs.notify }}
         run: |
-          python3 scripts/private_run.py \
+          python3 scripts/private_run.py --notification-output \
             xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
             python3 -u app.py
+
+      - name: 清理代理
+        if: always()
+        run: |
+          pkill -x sing-box || true
+          rm -f sing-box sing-box-config.json sing-box.log || true
+
+  notify-failure:
+    name: 失败兜底通知
+    needs: Renew-lunes
+    if: >-
+      ${{ always() && needs.Renew-lunes.result == 'failure' &&
+          needs.Renew-lunes.outputs.notification_sent != 'true' &&
+          (github.event_name != 'workflow_dispatch' || inputs.notify) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Send Telegram failure alert directly
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          CHECKOUT_OUTCOME: ${{ needs.Renew-lunes.outputs.checkout_outcome }}
+          PYTHON_OUTCOME: ${{ needs.Renew-lunes.outputs.python_outcome }}
+          INSTALL_OUTCOME: ${{ needs.Renew-lunes.outputs.install_outcome }}
+          TEST_OUTCOME: ${{ needs.Renew-lunes.outputs.test_outcome }}
+          PROXY_OUTCOME: ${{ needs.Renew-lunes.outputs.proxy_outcome }}
+          RENEW_OUTCOME: ${{ needs.Renew-lunes.outputs.renew_outcome }}
+        run: python3 scripts/notify_failure.py

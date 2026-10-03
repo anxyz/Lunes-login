@@ -1,6 +1,7 @@
 import contextlib
 import io
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -100,6 +101,22 @@ class TelegramTests(unittest.TestCase):
     def test_http_success_with_api_failure_is_not_treated_as_sent(self):
         self.post.return_value = response(False, 200, "Rejected")
         self.assertFalse(app.send_tg_message("❌", "登录失败"))
+
+    def test_broken_proxy_environment_is_not_used_for_telegram(self):
+        with patch.dict(os.environ, {"HTTPS_PROXY": "socks5://127.0.0.1:1"}):
+            self.assertTrue(app.send_tg_message("❌", "登录失败"))
+        self.assertEqual(self.post.call_args.kwargs["proxies"], {"http": "", "https": ""})
+
+    def test_delivery_receipt_is_written_only_after_confirmed_notification(self):
+        for sent in (True, False):
+            for browser in (None, self.browser):
+                with self.subTest(sent=sent, browser=browser), tempfile.TemporaryDirectory() as folder:
+                    output = Path(folder, "output")
+                    output.touch()
+                    self.post.return_value = response(sent)
+                    with patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+                        self.assertEqual(app.send_tg_message("❌", "登录失败", sb=browser), sent)
+                    self.assertEqual(output.read_text(), "notification_sent=true\n" if sent else "")
 
     def test_long_caption_and_text_fit_telegram_limits(self):
         extra = "🖼️" * 3000

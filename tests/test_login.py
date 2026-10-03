@@ -269,7 +269,7 @@ class BrowserScriptTests(unittest.TestCase):
 
 
 class ResultTests(unittest.TestCase):
-    def run_main(self, logged_in, visited, browser_error=None):
+    def run_main(self, logged_in, visited, browser_error=None, notification=True):
         browser = MagicMock()
         factory = MagicMock()
         factory.return_value.__enter__.return_value = browser
@@ -282,7 +282,7 @@ class ResultTests(unittest.TestCase):
               patch.object(app, "login", return_value=logged_in,
                            side_effect=browser_error),
               patch.object(app, "visit_server", return_value=(visited, info)),
-              patch.object(app, "send_tg_message") as notify,
+              patch.object(app, "send_tg_message", return_value=notification) as notify,
               contextlib.redirect_stdout(io.StringIO())):
             result = app.main()
             notify.assert_called_once()
@@ -298,6 +298,12 @@ class ResultTests(unittest.TestCase):
 
     def test_success_exits_with_success(self):
         self.assertEqual(self.run_main(True, True), 0)
+
+    def test_notification_failure_fails_job_for_fallback_alert(self):
+        self.assertEqual(self.run_main(True, True, notification=False), 1)
+
+    def test_skipped_notification_preserves_successful_login_result(self):
+        self.assertEqual(self.run_main(True, True, notification=None), 0)
 
     def test_suppressed_browser_error_still_exits_with_failure(self):
         self.assertEqual(self.run_main(False, False, RuntimeError("Browser closed")), 1)
