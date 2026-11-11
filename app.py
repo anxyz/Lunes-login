@@ -340,8 +340,11 @@ def _activate_window():
 def _xdotool_click(x: int, y: int):
     _activate_window()
     try:
+        # 拟人化微移动：先移动到附近，微停留后再对准目标坐标，模拟真实鼠标轨迹
+        subprocess.run(["xdotool", "mousemove", "--sync", str(max(0, x - 15)), str(max(0, y - 10))], timeout=3, stderr=subprocess.DEVNULL)
+        time.sleep(0.1)
         subprocess.run(["xdotool", "mousemove", "--sync", str(x), str(y)], timeout=3, stderr=subprocess.DEVNULL)
-        time.sleep(0.15)
+        time.sleep(0.2)
         subprocess.run(["xdotool", "click", "1"], timeout=2, stderr=subprocess.DEVNULL)
     except Exception:
         os.system(f"xdotool mousemove {x} {y} click 1 2>/dev/null")
@@ -379,27 +382,28 @@ def handle_turnstile(sb) -> bool:
         except Exception: pass
         time.sleep(0.5)
 
-    for attempt in range(6):
+    for attempt in range(8):
         if execute_js(sb, _SOLVED_JS):
             print("✅ Turnstile 验证通过")
             return True
         try: execute_js(sb, _EXPAND_JS)
         except Exception: pass
-        time.sleep(0.3)
+        time.sleep(0.5)
 
         # SeleniumBase 可定位普通页面脚本无法直接读取的验证码控件。
         click_browser_captcha(sb)
         if not execute_js(sb, _SOLVED_JS):
             _click_turnstile(sb)
         
-        for _ in range(8):
+        # 延长每次点击后的响应等待时间（某些节点延迟高，CF 回传 token 需要 5~8 秒）
+        for _ in range(16):
             time.sleep(0.5)
             if execute_js(sb, _SOLVED_JS):
                 print("✅ Turnstile 验证通过")
                 return True
         print("⚠️ 验证未通过，正在重试")
 
-    print("  ❌ Turnstile 6 次均失败")
+    print("  ❌ Turnstile 8 次均失败")
     return False
 
 def login(sb, timeout=45) -> bool:

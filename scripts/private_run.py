@@ -24,6 +24,7 @@ PUBLIC_STATUSES = frozenset({
     "🖱️ 正在点击验证码",
     "⚠️ 验证未通过，正在重试",
     "❌ Turnstile 6 次均失败",
+    "❌ Turnstile 8 次均失败",
     "⚠️ 浏览器验证码点击未完成",
     "⚠️ 获取验证码位置失败",
     "⚠️ 无法定位 Turnstile 坐标",
