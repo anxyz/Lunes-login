@@ -120,6 +120,21 @@ sys.stderr.buffer.write(b'\\xffunknown-byte-secret\\n')
         ])
         self.assertEqual(result.stderr, "")
 
+    def test_captcha_retry_statuses_are_public_without_page_details(self):
+        statuses = [
+            "⚠️ 服务端拒绝本次验证码",
+            "⚠️ 服务端拒绝验证码，重新加载登录页后重试",
+            "❌ 服务端连续拒绝验证码，已停止重试",
+        ]
+        script = "\n".join(
+            f"print({line!r}); print({(line + ' ' + PRIVATE_TEXT)!r})"
+            for line in statuses
+        )
+        result = self.invoke(script)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.splitlines(), statuses)
+        self.assertEqual(result.stderr, "")
+
     def test_child_failure_remains_failure_without_traceback_leak(self):
         result = self.invoke(f"import sys; print({PRIVATE_TEXT!r}, file=sys.stderr); sys.exit(7)")
         self.assertEqual(result.returncode, 7)

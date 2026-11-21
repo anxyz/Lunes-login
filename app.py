@@ -407,6 +407,18 @@ def handle_turnstile(sb) -> bool:
     return False
 
 def login(sb, timeout=45) -> bool:
+    # 服务端拒绝的 token 不可复用；每次重试重新加载表单和验证码。
+    for attempt in range(3):
+        result = login_attempt(sb, timeout)
+        if result is not None:
+            return result
+        if attempt < 2:
+            print("⚠️ 服务端拒绝验证码，重新加载登录页后重试")
+            time.sleep(2)
+    return login_failed("服务端连续拒绝验证码，已停止重试")
+
+
+def login_attempt(sb, timeout=45):
     print("🌐 正在打开登录页面")
     sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=5)
 
@@ -452,6 +464,12 @@ def login(sb, timeout=45) -> bool:
         if is_authenticated(sb):
             print("✅ 登录成功，已进入账户页面！")
             return True
+        if login_form_visible(sb):
+            # 错误提示会在数秒后隐藏，提交返回后立即读取。
+            body = (sb.get_text("body") or "").lower()
+            if "failed captcha" in body:
+                print("⚠️ 服务端拒绝本次验证码")
+                return None
         if time.monotonic() >= next_click and is_cloudflare_page(sb):
             click_browser_captcha(sb)
             next_click = time.monotonic() + 10

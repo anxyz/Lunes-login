@@ -26,7 +26,7 @@ class Clock:
 class Browser:
     """模拟表单、验证码和提交后异步跳转，不访问真实账号。"""
 
-    def __init__(self, clock, redirect_after=5, turnstile_at=None,
+    def __init__(self, clock, redirect_after: int | None = 5, turnstile_at=None,
                  cloudflare=False):
         self.clock = clock
         self.redirect_after = redirect_after
@@ -153,6 +153,50 @@ class LoginTests(unittest.TestCase):
         with patch.object(app, "handle_turnstile", return_value=False):
             self.assertFalse(app.login(browser))
         self.assertIsNone(browser.submitted_at)
+
+    def test_rejected_captcha_reloads_form_and_gets_a_fresh_token(self):
+        class RejectedCaptchaBrowser(Browser):
+            def __init__(self, clock):
+                super().__init__(clock, turnstile_at=0)
+                self.submissions = 0
+                self.opens = 0
+
+            def uc_open_with_reconnect(self, url, reconnect_time):
+                self.opens += 1
+                self.solved = False
+                self.submitted_at = None
+
+            def uc_click(self, selector, reconnect_time):
+                super().uc_click(selector, reconnect_time)
+                self.submissions += 1
+
+            def authenticated(self):
+                return self.submissions >= 2 and super().authenticated()
+
+            def get_text(self, selector):
+                if self.submissions == 1 and self.submitted_at is not None:
+                    return 'Failed captcha please try again'
+                return ''
+
+        browser = RejectedCaptchaBrowser(self.clock)
+        self.assertTrue(app.login(browser, timeout=10))
+        self.assertEqual(browser.opens, 2)
+        self.assertEqual(browser.submissions, 2)
+        self.assertEqual(browser.captcha_clicks, 2)
+
+    def test_captcha_rejection_retries_are_bounded(self):
+        browser = Browser(self.clock, redirect_after=None, turnstile_at=0)
+        browser.get_text = lambda selector: 'Failed captcha please try again'
+        with patch.object(browser, "uc_open_with_reconnect", wraps=browser.uc_open_with_reconnect) as opened:
+            self.assertFalse(app.login(browser, timeout=10))
+        self.assertEqual(opened.call_count, 3)
+        self.assertIn("服务端连续拒绝验证码", self.output.getvalue())
+
+    def test_invalid_credentials_are_not_retried(self):
+        browser = Browser(self.clock, redirect_after=None)
+        with patch.object(browser, "uc_open_with_reconnect", wraps=browser.uc_open_with_reconnect) as opened:
+            self.assertFalse(app.login(browser, timeout=5))
+        self.assertEqual(opened.call_count, 1)
 
     def test_missing_form_fails_without_submitting(self):
         browser = Browser(self.clock, cloudflare=True)
